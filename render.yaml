@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: relay-peerplay
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    autoDeployTrigger: commit

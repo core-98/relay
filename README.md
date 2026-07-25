@@ -55,12 +55,30 @@ npm test
 The repository keeps its Cloudflare/Vinext build as the default. `vercel.json`
 selects Vercel's native Next.js runtime and runs the separate
 `npm run build:vercel` command, so importing the GitHub repository into Vercel
-needs no dashboard build-command override. `tsconfig.vercel.json` keeps
+needs no dashboard build-command override. `tsconfig.node.json` keeps
 Cloudflare-only Worker and D1 entrypoints outside Vercel's Next.js type-check.
 
 The current signalling store is process-local and intended for this prototype.
 A production deployment that may scale to multiple function instances should
 replace it with one transient coordination service, as described below.
+
+## Deploy to Render
+
+Render is the recommended host for the current process-local signalling design.
+The included multi-stage `Dockerfile` builds Relay as a standalone Next.js
+server and binds it to Render's default port, `10000`.
+
+1. In Render, create a **Blueprint** and connect the
+   `https://github.com/core-98/relay` repository.
+2. Render reads `render.yaml` and creates the `relay-peerplay` Docker web
+   service on the **Free** instance in Singapore.
+3. Confirm the Blueprint to start the first deployment. Future pushes to
+   `main` deploy automatically.
+
+No environment variables, database, or persistent disk are required. Active
+rooms keep sending signalling requests, so the free service remains awake
+during a session. Rooms intentionally end if Render restarts or redeploys the
+container, or if an idle service spins down.
 
 ## Codes and keys
 

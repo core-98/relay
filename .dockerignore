@@ -1,0 +1,16 @@
+.git
+.gitignore
+.next
+.openai
+.vercel
+.wrangler
+build
+dist
+node_modules
+npm-debug.log*
+tsconfig.tsbuildinfo
+.env
+.env.*
+!.env.example
+Dockerfile*
+README.md
