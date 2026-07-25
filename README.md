@@ -50,6 +50,18 @@ npm run build
 npm test
 ```
 
+## Deploy to Vercel
+
+The repository keeps its Cloudflare/Vinext build as the default. `vercel.json`
+selects Vercel's native Next.js runtime and runs the separate
+`npm run build:vercel` command, so importing the GitHub repository into Vercel
+needs no dashboard build-command override. `tsconfig.vercel.json` keeps
+Cloudflare-only Worker and D1 entrypoints outside Vercel's Next.js type-check.
+
+The current signalling store is process-local and intended for this prototype.
+A production deployment that may scale to multiple function instances should
+replace it with one transient coordination service, as described below.
+
 ## Codes and keys
 
 The six-digit code and the word phrase are two renderings of the same room id —
