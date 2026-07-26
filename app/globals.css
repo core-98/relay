@@ -781,6 +781,40 @@ button {
   aspect-ratio: auto;
 }
 
+html.relay-fullscreen-lock,
+html.relay-fullscreen-lock body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.stage.is-mobile-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  max-width: none;
+  aspect-ratio: auto;
+  touch-action: manipulation;
+}
+
+.stage.is-mobile-fullscreen .stage-badges {
+  top: max(10px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+}
+
+.stage.is-mobile-fullscreen .stage-sync {
+  top: max(10px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+}
+
+.stage.is-mobile-fullscreen .controls {
+  padding-right: max(12px, env(safe-area-inset-right));
+  padding-bottom: max(12px, env(safe-area-inset-bottom));
+  padding-left: max(12px, env(safe-area-inset-left));
+}
+
 .stage.is-controls-hidden {
   cursor: none;
 }
@@ -1591,6 +1625,11 @@ button {
     overflow: auto;
   }
 
+  .stage.is-mobile-fullscreen .player-menu {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(64px, calc(env(safe-area-inset-bottom) + 56px));
+  }
+
   .quality-menu {
     width: min(230px, calc(100% - 16px));
   }
@@ -1602,6 +1641,10 @@ button {
   .subtitle-layer {
     bottom: 64px;
     width: 92%;
+  }
+
+  .stage.is-mobile-fullscreen .subtitle-layer {
+    bottom: max(72px, calc(env(safe-area-inset-bottom) + 64px));
   }
 
   .subtitle-layer span {

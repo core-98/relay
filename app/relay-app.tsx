@@ -320,8 +320,10 @@ export function RelayApp() {
   const [needsGesture, setNeedsGesture] = useState(false);
   const [disconnectedFor, setDisconnectedFor] = useState<number | null>(null);
   const [countdown, setCountdown] = useState(RECONNECT_WINDOW);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [nativeFullscreen, setNativeFullscreen] = useState(false);
+  const [mobileFullscreen, setMobileFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
+  const isFullscreen = nativeFullscreen || mobileFullscreen;
 
   const sessionRef = useRef<RoomSession | null>(null);
   const modeRef = useRef<PlaybackMode>("sync");
@@ -751,7 +753,8 @@ export function RelayApp() {
       setSubtitlesOn(false);
       subtitleRef.current = { name: "", cues: [], enabled: false };
       setMode("sync");
-      setIsFullscreen(false);
+      setNativeFullscreen(false);
+      setMobileFullscreen(false);
       setControlsVisible(true);
       if (fullscreenControlsTimerRef.current !== null) {
         window.clearTimeout(fullscreenControlsTimerRef.current);
@@ -1598,14 +1601,19 @@ export function RelayApp() {
       } else if (key === "m") {
         event.preventDefault();
         toggleMute();
+      } else if (key === "escape" && mobileFullscreen) {
+        event.preventDefault();
+        setMobileFullscreen(false);
+        setControlsVisible(true);
+        screen.orientation?.unlock?.();
       } else if (key === "f") {
         event.preventDefault();
-        toggleFullscreen();
+        void toggleFullscreen();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [privacyOpen, screen, toggleMute, togglePlay]);
+  }, [mobileFullscreen, privacyOpen, screen, toggleMute, togglePlay]);
 
   async function seekTo(seconds: number) {
     if (!session || !duration) return;
@@ -1854,7 +1862,7 @@ export function RelayApp() {
     setControlsVisible(true);
     clearFullscreenControlsTimer();
     if (
-      document.fullscreenElement === stageRef.current &&
+      (document.fullscreenElement === stageRef.current || mobileFullscreen) &&
       !activeVideo()?.paused &&
       !qualityOpen &&
       !speedOpen
@@ -1864,18 +1872,31 @@ export function RelayApp() {
         fullscreenControlsTimerRef.current = null;
       }, FULLSCREEN_CONTROLS_DELAY);
     }
-  }, [activeVideo, clearFullscreenControlsTimer, qualityOpen, speedOpen]);
+  }, [
+    activeVideo,
+    clearFullscreenControlsTimer,
+    mobileFullscreen,
+    qualityOpen,
+    speedOpen,
+  ]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
       const active = document.fullscreenElement === stageRef.current;
-      setIsFullscreen(active);
+      setNativeFullscreen(active);
       setControlsVisible(true);
       clearFullscreenControlsTimer();
+      if (!active) screen.orientation?.unlock?.();
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, [clearFullscreenControlsTimer]);
+
+  useEffect(() => {
+    if (!mobileFullscreen) return;
+    document.documentElement.classList.add("relay-fullscreen-lock");
+    return () => document.documentElement.classList.remove("relay-fullscreen-lock");
+  }, [mobileFullscreen]);
 
   useEffect(() => {
     if (isFullscreen && playing) revealFullscreenControls();
@@ -1894,11 +1915,38 @@ export function RelayApp() {
 
   useEffect(() => clearFullscreenControlsTimer, [clearFullscreenControlsTimer]);
 
-  function toggleFullscreen() {
+  async function toggleFullscreen() {
     const node = stageRef.current;
     if (!node) return;
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
-    else void node.requestFullscreen().catch(() => undefined);
+
+    if (mobileFullscreen) {
+      setMobileFullscreen(false);
+      setControlsVisible(true);
+      screen.orientation?.unlock?.();
+      return;
+    }
+
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => undefined);
+      return;
+    }
+
+    try {
+      await node.requestFullscreen();
+      if (navigator.maxTouchPoints > 0 || window.innerWidth <= 900) {
+        const orientation = screen.orientation as ScreenOrientation & {
+          lock?: (orientation: OrientationLockType) => Promise<void>;
+        };
+        await orientation.lock?.("landscape").catch(() => undefined);
+      }
+    } catch {
+      // iPhone Safari does not support fullscreen on arbitrary elements.
+      // Keep Relay's controls and subtitles by using a fixed immersive stage.
+      if (navigator.maxTouchPoints > 0 || window.innerWidth <= 900) {
+        setMobileFullscreen(true);
+        setControlsVisible(true);
+      }
+    }
   }
 
   /* ─── derived view state ──────────────────────────────────────────── */
@@ -2243,7 +2291,9 @@ export function RelayApp() {
           <div className="room">
             <div className="room-main">
               <div
-                className={`stage${isFullscreen && !controlsVisible ? " is-controls-hidden" : ""}`}
+                className={`stage${mobileFullscreen ? " is-mobile-fullscreen" : ""}${
+                  isFullscreen && !controlsVisible ? " is-controls-hidden" : ""
+                }`}
                 ref={stageRef}
                 onPointerMove={() => {
                   if (isFullscreen) revealFullscreenControls();
