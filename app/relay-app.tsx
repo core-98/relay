@@ -85,6 +85,10 @@ type PeerState = {
   sample: TransportSample;
 };
 type PeerReadout = { kbps: number; rtt: number; height: number; loss: number };
+type AudioMixerState = {
+  context: AudioContext;
+  source: MediaElementAudioSourceNode;
+};
 
 const QUALITY_LADDER: { id: Quality; label: string; note: string }[] = [
   { id: "auto", label: "Auto", note: "adaptive" },
@@ -349,6 +353,7 @@ export function RelayApp() {
   const capturePipelinesRef = useRef(
     new Map<HTMLVideoElement, { stream: MediaStream; stop: () => void }>(),
   );
+  const audioMixersRef = useRef(new Map<HTMLVideoElement, AudioMixerState>());
   const pollBusyRef = useRef(false);
   const migratingRef = useRef(false);
   const teardownRef = useRef(false);
@@ -476,17 +481,61 @@ export function RelayApp() {
     );
   }, []);
 
-  const releaseCapturePipeline = useCallback((video: HTMLVideoElement) => {
-    const pipeline = capturePipelinesRef.current.get(video);
-    if (!pipeline) return;
-    pipeline.stop();
-    capturePipelinesRef.current.delete(video);
+  const ensureAudioMixer = useCallback((video: HTMLVideoElement) => {
+    const existing = audioMixersRef.current.get(video);
+    if (existing) return existing;
+
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+    if (!AudioContextClass) return null;
+
+    const context = new AudioContextClass({ latencyHint: "playback" });
+    try {
+      const source = context.createMediaElementSource(video);
+      // Only the visible host video should also play through the local speakers.
+      // Hidden per-viewer videos feed WebRTC destinations exclusively.
+      if (video === localVideoRef.current) source.connect(context.destination);
+      const mixer = { context, source };
+      audioMixersRef.current.set(video, mixer);
+      return mixer;
+    } catch {
+      void context.close().catch(() => undefined);
+      return null;
+    }
   }, []);
+
+  const resumeAudioMixer = useCallback((video: HTMLVideoElement) => {
+    const mixer = audioMixersRef.current.get(video);
+    if (mixer?.context.state === "suspended") {
+      void mixer.context.resume().catch(() => undefined);
+    }
+  }, []);
+
+  const releaseCapturePipeline = useCallback(
+    (video: HTMLVideoElement, disposeAudioMixer = false) => {
+      const pipeline = capturePipelinesRef.current.get(video);
+      if (pipeline) {
+        pipeline.stop();
+        capturePipelinesRef.current.delete(video);
+      }
+      if (!disposeAudioMixer) return;
+
+      const mixer = audioMixersRef.current.get(video);
+      if (!mixer) return;
+      mixer.source.disconnect();
+      void mixer.context.close().catch(() => undefined);
+      audioMixersRef.current.delete(video);
+    },
+    [],
+  );
 
   /**
    * Media-element capture can expose only the audio track for some MP4 decode
    * paths. Drawing decoded frames into a canvas produces a stable, codec-neutral
-   * video track for WebRTC while keeping the element's original audio track.
+   * video track for WebRTC. Web Audio explicitly folds multichannel sources
+   * into stereo so center-channel dialogue is not lost in WebRTC transport.
    */
   const getCaptureStream = useCallback((video: HTMLVideoElement) => {
     const existing = capturePipelinesRef.current.get(video);
@@ -499,6 +548,30 @@ export function RelayApp() {
     const capture = capturable.captureStream || capturable.mozCaptureStream;
     if (!capture) throw new Error("This browser cannot share video playback yet");
     const nativeStream = capture.call(video);
+    const nativeAudioTracks = nativeStream.getAudioTracks();
+    let outputAudioTracks = nativeAudioTracks;
+    let stopAudioMix = () => undefined;
+
+    if (nativeAudioTracks.length) {
+      const mixer = ensureAudioMixer(video);
+      if (mixer) {
+        const destination = mixer.context.createMediaStreamDestination();
+        destination.channelCount = 2;
+        destination.channelCountMode = "explicit";
+        destination.channelInterpretation = "speakers";
+        mixer.source.connect(destination);
+        resumeAudioMixer(video);
+        outputAudioTracks = destination.stream.getAudioTracks();
+        stopAudioMix = () => {
+          try {
+            mixer.source.disconnect(destination);
+          } catch {
+            /* already disconnected during teardown */
+          }
+          for (const track of destination.stream.getTracks()) track.stop();
+        };
+      }
+    }
 
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(2, video.videoWidth);
@@ -507,9 +580,22 @@ export function RelayApp() {
     const canvasCapture = canvas.captureStream?.bind(canvas);
     if (!context || !canvasCapture) {
       if (!nativeStream.getVideoTracks().length) {
+        stopAudioMix();
         throw new Error("This browser cannot capture the video's picture");
       }
-      return nativeStream;
+      const stream = new MediaStream([
+        ...nativeStream.getVideoTracks(),
+        ...outputAudioTracks,
+      ]);
+      const pipeline = {
+        stream,
+        stop: () => {
+          stopAudioMix();
+          for (const track of nativeStream.getTracks()) track.stop();
+        },
+      };
+      capturePipelinesRef.current.set(video, pipeline);
+      return stream;
     }
 
     const canvasStream = canvasCapture(30);
@@ -548,7 +634,7 @@ export function RelayApp() {
 
     const stream = new MediaStream([
       canvasVideoTrack,
-      ...nativeStream.getAudioTracks(),
+      ...outputAudioTracks,
     ]);
     const pipeline = {
       stream,
@@ -556,6 +642,7 @@ export function RelayApp() {
         stopped = true;
         if (frameHandle) frameVideo.cancelVideoFrameCallback?.(frameHandle);
         if (animationHandle) window.cancelAnimationFrame(animationHandle);
+        stopAudioMix();
         for (const track of [...canvasStream.getTracks(), ...nativeStream.getTracks()]) {
           track.stop();
         }
@@ -563,14 +650,14 @@ export function RelayApp() {
     };
     capturePipelinesRef.current.set(video, pipeline);
     return stream;
-  }, []);
+  }, [ensureAudioMixer, resumeAudioMixer]);
 
   const buildPersonalStream = useCallback(
     async (peerId: string) => {
       const peer = peersRef.current.get(peerId);
       if (!peer || !objectUrlRef.current) return null;
 
-      if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo);
+      if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
       peer.personalVideo?.remove();
       const video = document.createElement("video");
       video.src = objectUrlRef.current;
@@ -658,7 +745,10 @@ export function RelayApp() {
       const target = fromPeer ? videoForPeer(fromPeer) : localVideoRef.current;
       if (!target) return;
 
-      if (action === "play") await target.play().catch(() => undefined);
+      if (action === "play") {
+        resumeAudioMixer(target);
+        await target.play().catch(() => undefined);
+      }
       if (action === "pause") target.pause();
       if (action === "seek" && typeof value === "number") moveVideoTo(target, value);
       if (action === "rate" && typeof value === "number" && PLAYBACK_RATES.some((rate) => rate === value)) {
@@ -680,7 +770,7 @@ export function RelayApp() {
       }
       await broadcastSecure({ type: "control", action, value });
     },
-    [broadcastSecure, sendSecure, videoForPeer],
+    [broadcastSecure, resumeAudioMixer, sendSecure, videoForPeer],
   );
 
   const grantControl = useCallback(
@@ -708,11 +798,11 @@ export function RelayApp() {
     (message: string) => {
       teardownRef.current = true;
       for (const peer of peersRef.current.values()) {
-        if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo);
+        if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
         peer.personalVideo?.remove();
         peer.pc.close();
       }
-      if (localVideoRef.current) releaseCapturePipeline(localVideoRef.current);
+      if (localVideoRef.current) releaseCapturePipeline(localVideoRef.current, true);
       peersRef.current.clear();
       pendingIceRef.current.clear();
       remoteStreamRef.current = null;
@@ -1049,7 +1139,7 @@ export function RelayApp() {
       }
       if (event.type === "peer-left") {
         const peer = peersRef.current.get(event.from);
-        if (peer?.personalVideo) releaseCapturePipeline(peer.personalVideo);
+        if (peer?.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
         peer?.personalVideo?.remove();
         peer?.pc.close();
         peersRef.current.delete(event.from);
@@ -1255,11 +1345,11 @@ export function RelayApp() {
     () => () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       for (const peer of peersRef.current.values()) {
-        if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo);
+        if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
         peer.personalVideo?.remove();
         peer.pc.close();
       }
-      if (localVideoRef.current) releaseCapturePipeline(localVideoRef.current);
+      if (localVideoRef.current) releaseCapturePipeline(localVideoRef.current, true);
       void mediaCleanupRef.current();
     },
     [releaseCapturePipeline],
@@ -1334,7 +1424,7 @@ export function RelayApp() {
 
         releaseCapturePipeline(video);
         for (const peer of peersRef.current.values()) {
-          if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo);
+          if (peer.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
         }
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
         await mediaCleanupRef.current();
@@ -1466,11 +1556,13 @@ export function RelayApp() {
   const openAudio = useCallback(() => {
     if (hostSilencedMe) return false;
     setSoundOn(true);
-    void activeVideo()
-      ?.play()
-      .catch(() => undefined);
+    const video = activeVideo();
+    if (video) {
+      resumeAudioMixer(video);
+      void video.play().catch(() => undefined);
+    }
     return true;
-  }, [activeVideo, hostSilencedMe]);
+  }, [activeVideo, hostSilencedMe, resumeAudioMixer]);
 
   const changeVolume = useCallback(
     (next: number) => {
@@ -1500,6 +1592,7 @@ export function RelayApp() {
     }
     const video = localVideoRef.current;
     if (!video) return;
+    resumeAudioMixer(video);
     await video.play().catch(() => undefined);
     setNeedsGesture(video.paused);
     setPlaying(!video.paused);
@@ -1767,7 +1860,7 @@ export function RelayApp() {
     if (!current) return;
     await sendSecure(peerId, { type: "evicted" });
     const peer = peersRef.current.get(peerId);
-    if (peer?.personalVideo) releaseCapturePipeline(peer.personalVideo);
+    if (peer?.personalVideo) releaseCapturePipeline(peer.personalVideo, true);
     peer?.personalVideo?.remove();
     peer?.pc.close();
     peersRef.current.delete(peerId);
