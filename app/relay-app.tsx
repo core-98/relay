@@ -29,9 +29,13 @@ import {
   PauseIcon,
   PlayIcon,
   PlusIcon,
+  QrIcon,
+  ScanIcon,
   VolumeIcon,
   VolumeOffIcon,
 } from "./icons";
+import { QrScanner } from "./qr-scanner";
+import { cameraScanSupported } from "./lib/qr-scan";
 import {
   CodeFormat,
   formatRoomCode,
@@ -257,9 +261,11 @@ export function RelayApp() {
     () => "",
   );
   const urlInvite = useMemo(() => parseInvite(location), [location]);
+  // The installed app's "Scan an invite" shortcut lands here.
+  const wantsScan = /[?&]scan=1\b/.test(location);
 
   const [screenOverride, setScreenOverride] = useState<Screen | null>(null);
-  const screen = screenOverride ?? (urlInvite.code ? "join" : "landing");
+  const screen = screenOverride ?? (urlInvite.code || wantsScan ? "join" : "landing");
   const setScreen = setScreenOverride;
 
   const [session, setSession] = useState<RoomSession | null>(null);
@@ -277,11 +283,18 @@ export function RelayApp() {
   const [conversionProgress, setConversionProgress] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [codeFormat, setCodeFormat] = useState<CodeFormat>("numeric");
+  const [qrZoom, setQrZoom] = useState(false);
 
   // Join — each field falls back to whatever the invite link carried.
   const [joinDraft, setJoinDraft] = useState<string | null>(null);
   const [keyInput, setKeyInput] = useState("");
   const [keyPrompt, setKeyPrompt] = useState<boolean | null>(null);
+  // Camera support is a client fact, read the same way as the address bar:
+  // the server render offers no scanner and the client adds it once it knows.
+  const canScan = useSyncExternalStore(subscribeNothing, cameraScanSupported, () => false);
+  const [scanOverride, setScanOverride] = useState<boolean | null>(null);
+  const scanOpen = scanOverride ?? (wantsScan && canScan);
+  const setScanOpen = setScanOverride;
   const joinInput =
     joinDraft ??
     (urlInvite.code
@@ -1609,8 +1622,41 @@ export function RelayApp() {
     setKeyPrompt(Boolean(parsed.code) && !parsed.secret && !keyInput);
   }
 
-  async function submitJoin() {
-    const parsed = parseInvite(joinInput);
+  /**
+   * Called for every code the camera reads. Anything that is not a Relay
+   * invite is refused so the scanner keeps looking instead of closing on a
+   * stray QR. A scan that carries the key joins straight away — retyping a
+   * code you just pointed a camera at is the whole thing being avoided.
+   */
+  function acceptScan(text: string) {
+    const parsed = parseInvite(text);
+    if (!parsed.code) return false;
+
+    // Rooms live on the origin that issued them. Say so rather than sending
+    // the join at this origin's signalling endpoint and reporting "no session".
+    const scanned = /^https?:\/\/[^/]+/i.exec(text)?.[0] ?? "";
+    if (scanned && origin && scanned.toLowerCase() !== origin.toLowerCase()) {
+      setScanOpen(false);
+      setError(`That invite belongs to ${scanned} — open it there.`);
+      return true;
+    }
+
+    setScanOpen(false);
+    setJoinDraft(text);
+    setError("");
+    if (parsed.secret) {
+      setKeyInput(parsed.secret);
+      setKeyPrompt(false);
+      void submitJoin(text);
+    } else {
+      setKeyPrompt(!keyInput.trim());
+      notify("Room scanned — this QR carries no key");
+    }
+    return true;
+  }
+
+  async function submitJoin(input = joinInput) {
+    const parsed = parseInvite(input);
     if (!parsed.code) {
       setError("Enter the six digits, the word phrase, or the invite link.");
       return;
@@ -2062,6 +2108,15 @@ export function RelayApp() {
     [codeFormat, codeText],
   );
 
+  // The enlarged QR always encodes the link: it is the only rendering that
+  // carries the invite key, so it is the only one worth pointing a camera at.
+  const room = session ?? codeDraft;
+  const inviteLink = room ? inviteUrl(origin, room.code, room.secret) : "";
+  const zoomQr = useMemo(
+    () => (qrZoom && inviteLink ? qrPath(inviteLink, 3) : null),
+    [qrZoom, inviteLink],
+  );
+
   const offline = disconnectedFor !== null;
   const weakLink =
     !offline &&
@@ -2278,11 +2333,17 @@ export function RelayApp() {
                 {codeTabs}
                 <div className="code-block">
                   {qr && (
-                    <div className="qr">
+                    <button
+                      type="button"
+                      className="qr qr-tap"
+                      onClick={() => setQrZoom(true)}
+                      aria-label="Enlarge the invite QR code"
+                    >
                       <svg viewBox={`0 0 ${qr.size} ${qr.size}`} role="img" aria-label="Invite QR code">
                         <path d={qr.path} fill="#0d0d0f" />
                       </svg>
-                    </div>
+                      <span className="qr-tap-hint">Tap to enlarge</span>
+                    </button>
                   )}
                   <div className="stack-2" style={{ minWidth: 0 }}>
                     <span className={`code-value${codeFormat === "numeric" ? " is-numeric" : ""}`}>
@@ -2303,6 +2364,14 @@ export function RelayApp() {
                   <button type="button" className="btn btn-secondary" onClick={copyCode}>
                     <CopyIcon />
                     Copy
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setQrZoom(true)}
+                  >
+                    <QrIcon size={15} />
+                    Show QR
                   </button>
                 </div>
                 <div className="foot-row">
@@ -2334,6 +2403,16 @@ export function RelayApp() {
                 autoComplete="nickname"
               />
             </div>
+            {canScan && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-block"
+                onClick={() => setScanOpen(true)}
+              >
+                <ScanIcon />
+                Scan the invite QR
+              </button>
+            )}
             <div className="field">
               <label htmlFor="join-code">Session code</label>
               <input
@@ -2371,7 +2450,7 @@ export function RelayApp() {
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={submitJoin}
+                onClick={() => submitJoin()}
                 disabled={busy}
               >
                 {busy ? "Connecting…" : "Join session"}
@@ -2912,7 +2991,13 @@ export function RelayApp() {
                       ))}
                     </div>
                     {qr && (
-                      <div className="qr" style={{ alignSelf: "flex-start" }}>
+                      <button
+                        type="button"
+                        className="qr qr-tap"
+                        style={{ alignSelf: "flex-start" }}
+                        onClick={() => setQrZoom(true)}
+                        aria-label="Enlarge the invite QR code"
+                      >
                         <svg
                           viewBox={`0 0 ${qr.size} ${qr.size}`}
                           role="img"
@@ -2920,7 +3005,8 @@ export function RelayApp() {
                         >
                           <path d={qr.path} fill="#0d0d0f" />
                         </svg>
-                      </div>
+                        <span className="qr-tap-hint">Tap to enlarge</span>
+                      </button>
                     )}
                     <div style={{ padding: "var(--space-3)", background: "var(--color-surface)" }}>
                       <span
@@ -2936,6 +3022,14 @@ export function RelayApp() {
                       onClick={copyCode}
                     >
                       Copy invite
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-block"
+                      onClick={() => setQrZoom(true)}
+                    >
+                      <QrIcon size={15} />
+                      Show QR full screen
                     </button>
                     <span style={{ fontSize: 12, color: "var(--dim)" }}>
                       Anyone holding the link can join while the session is live. Rotating issues
@@ -2994,6 +3088,59 @@ export function RelayApp() {
         onChange={onSubtitleInput}
         aria-label="Choose an SRT or WebVTT subtitle file"
       />
+
+      {scanOpen && <QrScanner onResult={acceptScan} onClose={() => setScanOpen(false)} />}
+
+      {qrZoom && room && (
+        <div className="dialog-backdrop" role="presentation" onClick={() => setQrZoom(false)}>
+          <div
+            className="dialog qr-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Invite QR code, enlarged"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="qr-large">
+              {zoomQr && (
+                <svg
+                  viewBox={`0 0 ${zoomQr.size} ${zoomQr.size}`}
+                  role="img"
+                  aria-label={`Invite QR code for room ${formatRoomCode(room.code)}`}
+                >
+                  <path d={zoomQr.path} fill="#0d0d0f" />
+                </svg>
+              )}
+            </div>
+            <div className="qr-dialog-code">
+              <span className="qr-dialog-digits">{formatRoomCode(room.code)}</span>
+              <span className="lbl">
+                This QR carries the invite key — anyone who scans it can join while the session
+                is live.
+              </span>
+            </div>
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(inviteLink).catch(() => undefined);
+                  notify("Invite link copied");
+                }}
+              >
+                <CopyIcon />
+                Copy link
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setQrZoom(false)}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {privacyOpen && (
         <div

@@ -738,6 +738,113 @@ button {
   shape-rendering: crispEdges;
 }
 
+/* — the small QR doubles as the way into the full-screen one — */
+.qr-tap {
+  display: block;
+  font: inherit;
+  color: #0d0d0f;
+  cursor: pointer;
+  transition: outline-color 120ms ease;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+.qr-tap:hover,
+.qr-tap:focus-visible {
+  outline-color: var(--color-accent);
+}
+
+.qr-tap-hint {
+  display: block;
+  padding-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, #0d0d0f 55%, transparent);
+}
+
+/* — enlarged QR: light panel, because a scanner needs the contrast — */
+.qr-dialog {
+  width: min(480px, 100%);
+  align-items: stretch;
+  background: #f4f4f5;
+  color: #0d0d0f;
+}
+
+.qr-large {
+  padding: var(--space-3);
+  background: #fff;
+  border: 1px solid color-mix(in srgb, #0d0d0f 15%, transparent);
+}
+
+.qr-large svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: min(60vh, 460px);
+  shape-rendering: crispEdges;
+}
+
+.qr-dialog-code {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.qr-dialog-digits {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  letter-spacing: 0.12em;
+  line-height: 1.1;
+}
+
+.qr-dialog .lbl {
+  color: color-mix(in srgb, #0d0d0f 62%, transparent);
+}
+
+/* — camera scanner — */
+.scan-dialog {
+  width: min(420px, 100%);
+}
+
+.scan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.scan-view {
+  position: relative;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--color-divider);
+}
+
+.scan-view video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The viewfinder is guidance only — decoding reads the whole frame. */
+.scan-frame {
+  position: absolute;
+  inset: 14%;
+  border: 2px solid color-mix(in srgb, #f4f4f5 85%, transparent);
+  box-shadow: 0 0 0 100vmax color-mix(in srgb, #000 42%, transparent);
+}
+
+.scan-wait {
+  position: absolute;
+  inset: auto 0 var(--space-4);
+  text-align: center;
+  font-size: 13px;
+  color: var(--dim);
+}
+
 .foot-row {
   display: flex;
   flex-wrap: wrap;

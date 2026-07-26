@@ -9,6 +9,11 @@ discovery. Nothing is uploaded and nothing is stored.
 
 - Host-created rooms with a six-digit code, rendered three ways: digits, a
   three-word phrase, or an invite link with a QR code
+- A full-screen QR from the host screen or the in-room share panel, sized to be
+  scanned across a room
+- Camera scanning on the join screen — the Shape Detection API where the browser
+  has it, a lazily loaded JS decoder on WebKit, which has never shipped it. An
+  installed PWA also gets a "Scan an invite" home-screen shortcut
 - A separate 256-bit invite key kept in the URL fragment
 - Direct WebRTC media from the host device; the video file is never uploaded
 - MP4, MKV, WebM, MOV, Ogg, and MPEG-TS input. Files the browser cannot open
@@ -90,6 +95,8 @@ fragment of the invite link, which browsers never send to a server.
 
 That is why the join screen asks for the key separately when someone types a
 bare code, and why the share panel marks the link as the format that carries it.
+The QR always encodes the link for the same reason: it is the only rendering
+worth pointing a camera at, so a scan joins in one step.
 Making a short code stand in for the key would need a PAKE (the Magic Wormhole
 approach), which this prototype does not implement.
 

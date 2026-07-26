@@ -134,6 +134,31 @@ export function VolumeOffIcon({ size = 17 }: IconProps) {
   );
 }
 
+export function ScanIcon({ size = 16 }: IconProps) {
+  return (
+    <Icon size={size}>
+      <path d="M3 8V5a2 2 0 0 1 2-2h3" />
+      <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+      <path d="M21 16v3a2 2 0 0 1-2 2h-3" />
+      <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+      <path d="M3 12h18" />
+    </Icon>
+  );
+}
+
+export function QrIcon({ size = 16 }: IconProps) {
+  return (
+    <Icon size={size}>
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+      <path d="M14 14h3v3h-3z" />
+      <path d="M21 14v3" />
+      <path d="M21 21h-4" />
+    </Icon>
+  );
+}
+
 export function ControlIcon({ size = 12 }: IconProps) {
   return (
     <Icon size={size}>
