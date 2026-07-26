@@ -4,6 +4,8 @@ export type Quality = "auto" | "1080" | "720" | "480" | "240";
 export type PlaybackMode = "sync" | "independent";
 export type PermissionKey = "playPause" | "seek" | "invite";
 export type Permissions = Record<PermissionKey, boolean>;
+export type SubtitleCue = { start: number; end: number; text: string };
+export type PlaybackAction = "play" | "pause" | "seek" | "rate";
 
 export const NO_PERMISSIONS: Permissions = {
   playPause: false,
@@ -24,15 +26,23 @@ export const FULL_CONTROL: Permissions = {
 export type SecureMessage =
   | { type: "permission"; permissions: Permissions }
   | { type: "mode"; mode: PlaybackMode }
-  | { type: "media"; name: string; duration: number; mode: PlaybackMode }
-  | { type: "control"; action: "play" | "pause" | "seek"; value?: number }
-  | { type: "control-request"; action: "play" | "pause" | "seek"; value?: number }
+  | { type: "media"; name: string; duration: number; mode: PlaybackMode; rate?: number }
+  | { type: "control"; action: PlaybackAction; value?: number }
+  | { type: "control-request"; action: PlaybackAction; value?: number }
   | { type: "control-plea" }
   | { type: "control-plea-result"; granted: boolean }
   | { type: "holder"; name: string }
   // A live MediaStream carries no media timeline, so the host publishes the
   // position it is playing from and viewers render their scrubber off that.
-  | { type: "position"; at: number; duration: number; playing: boolean }
+  | { type: "position"; at: number; duration: number; playing: boolean; rate?: number }
+  | {
+      type: "subtitles";
+      name: string;
+      cues: SubtitleCue[];
+      offset: number;
+      complete: boolean;
+    }
+  | { type: "subtitles-toggle"; enabled: boolean }
   | { type: "quality"; quality: Quality }
   | { type: "mute"; muted: boolean }
   | { type: "stats"; kbps: number; rtt: number; height: number; loss: number }

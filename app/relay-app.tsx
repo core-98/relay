@@ -44,10 +44,12 @@ import {
 import {
   FULL_CONTROL,
   NO_PERMISSIONS,
+  PlaybackAction,
   PlaybackMode,
   Permissions,
   Quality,
   SecureMessage,
+  SubtitleCue,
   decryptMessage,
   encryptMessage,
   importRoomKey,
@@ -79,6 +81,7 @@ type PeerState = {
   muted: boolean;
   personalVideo?: HTMLVideoElement;
   audioTrack?: MediaStreamTrack;
+  playbackRate: number;
   sample: TransportSample;
 };
 type PeerReadout = { kbps: number; rtt: number; height: number; loss: number };
@@ -136,6 +139,9 @@ const TRUST_ROWS: [string, string][] = [
 const RECONNECT_WINDOW = 60;
 const WEAK_KBPS = 900;
 const WEAK_LOSS = 4;
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+const SUBTITLE_CHUNK_SIZE = 80;
+const FULLSCREEN_CONTROLS_DELAY = 2400;
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -151,6 +157,43 @@ function formatBytes(bytes: number) {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
   if (bytes >= 1_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
   return `${Math.round(bytes / 1000)} kB`;
+}
+
+function parseSubtitleTime(input: string) {
+  const parts = input.trim().replace(",", ".").split(":").map(Number);
+  if (parts.some((part) => !Number.isFinite(part))) return Number.NaN;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return Number.NaN;
+}
+
+function parseSubtitleFile(source: string) {
+  const blocks = source
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n?/g, "\n")
+    .split(/\n{2,}/);
+  const cues: SubtitleCue[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split("\n").map((line) => line.trimEnd());
+    const timingIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timingIndex < 0) continue;
+    const [startText, endWithSettings] = lines[timingIndex].split("-->");
+    const endText = endWithSettings?.trim().split(/\s+/)[0] ?? "";
+    const start = parseSubtitleTime(startText);
+    const end = parseSubtitleTime(endText);
+    const text = lines
+      .slice(timingIndex + 1)
+      .join("\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .trim();
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start && text) {
+      cues.push({ start, end, text });
+    }
+  }
+
+  return cues.sort((a, b) => a.start - b.start);
 }
 
 function initialsOf(name: string) {
@@ -250,6 +293,11 @@ export function RelayApp() {
   const [mode, setMode] = useState<PlaybackMode>("sync");
   const [quality, setQuality] = useState<Quality>("auto");
   const [qualityOpen, setQualityOpen] = useState(false);
+  const [speedOpen, setSpeedOpen] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [subtitleName, setSubtitleName] = useState("");
+  const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
+  const [subtitlesOn, setSubtitlesOn] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -272,6 +320,8 @@ export function RelayApp() {
   const [needsGesture, setNeedsGesture] = useState(false);
   const [disconnectedFor, setDisconnectedFor] = useState<number | null>(null);
   const [countdown, setCountdown] = useState(RECONNECT_WINDOW);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
 
   const sessionRef = useRef<RoomSession | null>(null);
   const modeRef = useRef<PlaybackMode>("sync");
@@ -289,6 +339,7 @@ export function RelayApp() {
   const audioRef = useRef({ volume: 1, muted: true });
   const stageRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const subtitleInputRef = useRef<HTMLInputElement>(null);
   const objectUrlRef = useRef("");
   const mediaFileRef = useRef<File | null>(null);
   const mediaCleanupRef = useRef<() => Promise<void>>(async () => undefined);
@@ -298,6 +349,12 @@ export function RelayApp() {
   const pollBusyRef = useRef(false);
   const migratingRef = useRef(false);
   const teardownRef = useRef(false);
+  const subtitleRef = useRef<{ name: string; cues: SubtitleCue[]; enabled: boolean }>({
+    name: "",
+    cues: [],
+    enabled: false,
+  });
+  const fullscreenControlsTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -311,6 +368,9 @@ export function RelayApp() {
   useEffect(() => {
     holderNameRef.current = holderName;
   }, [holderName]);
+  useEffect(() => {
+    subtitleRef.current = { name: subtitleName, cues: subtitleCues, enabled: subtitlesOn };
+  }, [subtitleCues, subtitleName, subtitlesOn]);
 
   useEffect(() => {
     if (!toast) return;
@@ -356,6 +416,36 @@ export function RelayApp() {
   const broadcastSecure = useCallback(
     async (message: SecureMessage) => {
       await Promise.all([...peersRef.current.keys()].map((id) => sendSecure(id, message)));
+    },
+    [sendSecure],
+  );
+
+  const sendSubtitleTrack = useCallback(
+    async (
+      peerId: string,
+      track = subtitleRef.current,
+    ) => {
+      if (!track.cues.length) {
+        await sendSecure(peerId, {
+          type: "subtitles",
+          name: "",
+          cues: [],
+          offset: 0,
+          complete: true,
+        });
+        return;
+      }
+      for (let offset = 0; offset < track.cues.length; offset += SUBTITLE_CHUNK_SIZE) {
+        const cues = track.cues.slice(offset, offset + SUBTITLE_CHUNK_SIZE);
+        await sendSecure(peerId, {
+          type: "subtitles",
+          name: track.name,
+          cues,
+          offset,
+          complete: offset + cues.length >= track.cues.length,
+        });
+      }
+      await sendSecure(peerId, { type: "subtitles-toggle", enabled: track.enabled });
     },
     [sendSecure],
   );
@@ -487,6 +577,9 @@ export function RelayApp() {
         video.onloadedmetadata = () => resolve();
         video.onerror = () => reject(new Error("Could not prepare the personal stream"));
       });
+      const hostVideo = localVideoRef.current;
+      if (hostVideo) moveVideoTo(video, hostVideo.currentTime);
+      video.playbackRate = peer.playbackRate;
       await video.play().catch(() => undefined);
       return getCaptureStream(video);
     },
@@ -553,13 +646,22 @@ export function RelayApp() {
 
   /** Runs on the host: applies a control action and tells the right peers. */
   const applyControl = useCallback(
-    async (fromPeer: string | null, action: "play" | "pause" | "seek", value?: number) => {
+    async (fromPeer: string | null, action: PlaybackAction, value?: number) => {
       const target = fromPeer ? videoForPeer(fromPeer) : localVideoRef.current;
       if (!target) return;
 
       if (action === "play") await target.play().catch(() => undefined);
       if (action === "pause") target.pause();
       if (action === "seek" && typeof value === "number") moveVideoTo(target, value);
+      if (action === "rate" && typeof value === "number" && PLAYBACK_RATES.some((rate) => rate === value)) {
+        target.playbackRate = value;
+        if (fromPeer) {
+          const peer = peersRef.current.get(fromPeer);
+          if (peer) peer.playbackRate = value;
+        } else if (modeRef.current === "sync") {
+          for (const peer of peersRef.current.values()) peer.playbackRate = value;
+        }
+      }
 
       if (modeRef.current === "independent") {
         // Each viewer drives their own pipeline here, so a control only ever
@@ -641,7 +743,20 @@ export function RelayApp() {
       setNeedsGesture(false);
       setDisconnectedFor(null);
       setQuality("auto");
+      setQualityOpen(false);
+      setSpeedOpen(false);
+      setPlaybackRate(1);
+      setSubtitleName("");
+      setSubtitleCues([]);
+      setSubtitlesOn(false);
+      subtitleRef.current = { name: "", cues: [], enabled: false };
       setMode("sync");
+      setIsFullscreen(false);
+      setControlsVisible(true);
+      if (fullscreenControlsTimerRef.current !== null) {
+        window.clearTimeout(fullscreenControlsTimerRef.current);
+        fullscreenControlsTimerRef.current = null;
+      }
       if (message) setToast(message);
       window.setTimeout(() => (teardownRef.current = false), 0);
     },
@@ -679,6 +794,7 @@ export function RelayApp() {
             setFileName(message.name);
             setDuration(message.duration || 0);
             setMode(message.mode);
+            if (message.rate) setPlaybackRate(message.rate);
           }
           return;
         case "position":
@@ -686,10 +802,15 @@ export function RelayApp() {
             setPosition(message.at);
             setDuration(message.duration || 0);
             setPlaying(message.playing);
+            if (message.rate) setPlaybackRate(message.rate);
           }
           return;
         case "control":
           if (!isHost) {
+            if (message.action === "rate" && typeof message.value === "number") {
+              setPlaybackRate(message.value);
+              return;
+            }
             const video = remoteVideoRef.current;
             if (!video) return;
             if (message.action === "play") {
@@ -704,6 +825,18 @@ export function RelayApp() {
               setPosition(message.value);
             }
           }
+          return;
+        case "subtitles":
+          if (!isHost) {
+            setSubtitleName(message.name);
+            setSubtitleCues((previous) =>
+              message.offset === 0 ? message.cues : [...previous, ...message.cues],
+            );
+            if (!message.name) setSubtitlesOn(false);
+          }
+          return;
+        case "subtitles-toggle":
+          if (!isHost) setSubtitlesOn(message.enabled);
           return;
         case "control-request": {
           if (!isHost) return;
@@ -814,8 +947,10 @@ export function RelayApp() {
             name: mediaFileRef.current.name,
             duration: localVideoRef.current?.duration || 0,
             mode: modeRef.current,
+            rate: localVideoRef.current?.playbackRate || 1,
           });
         }
+        await sendSubtitleTrack(peerId);
       };
       channel.onmessage = async (event) => {
         try {
@@ -827,7 +962,7 @@ export function RelayApp() {
         }
       };
     },
-    [handleSecureMessage, notify, sendSecure],
+    [handleSecureMessage, notify, sendSecure, sendSubtitleTrack],
   );
 
   const createPeer = useCallback(
@@ -839,7 +974,13 @@ export function RelayApp() {
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
         bundlePolicy: "max-bundle",
       });
-      const peer: PeerState = { pc, name: peerName, muted: false, sample: EMPTY_SAMPLE };
+      const peer: PeerState = {
+        pc,
+        name: peerName,
+        muted: false,
+        playbackRate: localVideoRef.current?.playbackRate || 1,
+        sample: EMPTY_SAMPLE,
+      };
       peersRef.current.set(peerId, peer);
 
       pc.onicecandidate = (event) => {
@@ -1050,6 +1191,7 @@ export function RelayApp() {
           at: video.currentTime,
           duration: video.duration || 0,
           playing: !video.paused,
+          rate: video.playbackRate,
         });
         return;
       }
@@ -1061,6 +1203,7 @@ export function RelayApp() {
           at: video.currentTime,
           duration: video.duration || 0,
           playing: !video.paused,
+          rate: video.playbackRate,
         });
       }
     }, 1000);
@@ -1167,6 +1310,7 @@ export function RelayApp() {
     async (file: File) => {
       const video = localVideoRef.current;
       if (!video) return;
+      const rate = video.playbackRate || 1;
       notify("Preparing " + file.name + " locally");
 
       try {
@@ -1190,6 +1334,11 @@ export function RelayApp() {
         setFileName(file.name);
         setFileSize(file.size);
         setPosition(0);
+        const clearedSubtitles = { name: "", cues: [], enabled: false };
+        subtitleRef.current = clearedSubtitles;
+        setSubtitleName("");
+        setSubtitleCues([]);
+        setSubtitlesOn(false);
 
         video.src = objectUrlRef.current;
         await new Promise<void>((resolve, reject) => {
@@ -1198,13 +1347,18 @@ export function RelayApp() {
           video.load();
         });
         setDuration(video.duration || prepared.duration);
+        video.playbackRate = rate;
         await video.play().catch(() => undefined);
         await Promise.all([...peersRef.current.keys()].map((id) => attachMediaToPeer(id)));
+        await Promise.all(
+          [...peersRef.current.keys()].map((id) => sendSubtitleTrack(id, clearedSubtitles)),
+        );
         await broadcastSecure({
           type: "media",
           name: file.name,
           duration: video.duration || prepared.duration,
           mode: modeRef.current,
+          rate,
         });
         notify("Now sharing " + file.name);
       } catch (replaceError) {
@@ -1218,6 +1372,7 @@ export function RelayApp() {
       broadcastSecure,
       notify,
       releaseCapturePipeline,
+      sendSubtitleTrack,
     ],
   );
 
@@ -1443,6 +1598,9 @@ export function RelayApp() {
       } else if (key === "m") {
         event.preventDefault();
         toggleMute();
+      } else if (key === "f") {
+        event.preventDefault();
+        toggleFullscreen();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1497,11 +1655,70 @@ export function RelayApp() {
     notify(next === "auto" ? "Quality: Auto — adapts to the link" : `Capped at ${next}p`);
   }
 
+  async function choosePlaybackRate(next: number) {
+    setSpeedOpen(false);
+    if (!session) return;
+    if (!iHoldControl) {
+      notify("Playback speed follows the host in this session");
+      return;
+    }
+    setPlaybackRate(next);
+    if (isHost) {
+      await applyControl(null, "rate", next);
+    } else {
+      await sendSecure(session.hostId, {
+        type: "control-request",
+        action: "rate",
+        value: next,
+      });
+    }
+    notify(`Playback speed: ${next}×`);
+  }
+
+  async function onSubtitleInput(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      notify("Subtitle files must be smaller than 2 MB");
+      return;
+    }
+    const cues = parseSubtitleFile(await file.text());
+    if (!cues.length) {
+      notify("No readable cues found — choose an SRT or WebVTT file");
+      return;
+    }
+    const track = { name: file.name, cues, enabled: true };
+    subtitleRef.current = track;
+    setSubtitleName(file.name);
+    setSubtitleCues(cues);
+    setSubtitlesOn(true);
+    await Promise.all([...peersRef.current.keys()].map((id) => sendSubtitleTrack(id, track)));
+    notify(`${file.name} added · ${cues.length} subtitle cues`);
+  }
+
+  async function toggleSubtitles() {
+    if (!subtitleCues.length) {
+      if (isHost) subtitleInputRef.current?.click();
+      else notify("The host has not added subtitles");
+      return;
+    }
+    const enabled = !subtitlesOn;
+    setSubtitlesOn(enabled);
+    subtitleRef.current = { ...subtitleRef.current, enabled };
+    if (isHost) await broadcastSecure({ type: "subtitles-toggle", enabled });
+    notify(enabled ? "Subtitles on" : "Subtitles off");
+  }
+
   async function toggleSyncLock() {
     if (!session?.isHost) return;
     const next: PlaybackMode = mode === "sync" ? "independent" : "sync";
     setMode(next);
     modeRef.current = next;
+    if (next === "independent") {
+      const rate = localVideoRef.current?.playbackRate || 1;
+      for (const peer of peersRef.current.values()) peer.playbackRate = rate;
+    }
     await Promise.all([...peersRef.current.keys()].map((id) => attachMediaToPeer(id)));
     await broadcastSecure({ type: "mode", mode: next });
     notify(
@@ -1627,6 +1844,56 @@ export function RelayApp() {
     );
   }
 
+  const clearFullscreenControlsTimer = useCallback(() => {
+    if (fullscreenControlsTimerRef.current === null) return;
+    window.clearTimeout(fullscreenControlsTimerRef.current);
+    fullscreenControlsTimerRef.current = null;
+  }, []);
+
+  const revealFullscreenControls = useCallback(() => {
+    setControlsVisible(true);
+    clearFullscreenControlsTimer();
+    if (
+      document.fullscreenElement === stageRef.current &&
+      !activeVideo()?.paused &&
+      !qualityOpen &&
+      !speedOpen
+    ) {
+      fullscreenControlsTimerRef.current = window.setTimeout(() => {
+        setControlsVisible(false);
+        fullscreenControlsTimerRef.current = null;
+      }, FULLSCREEN_CONTROLS_DELAY);
+    }
+  }, [activeVideo, clearFullscreenControlsTimer, qualityOpen, speedOpen]);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      const active = document.fullscreenElement === stageRef.current;
+      setIsFullscreen(active);
+      setControlsVisible(true);
+      clearFullscreenControlsTimer();
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, [clearFullscreenControlsTimer]);
+
+  useEffect(() => {
+    if (isFullscreen && playing) revealFullscreenControls();
+    else {
+      clearFullscreenControlsTimer();
+      setControlsVisible(true);
+    }
+  }, [
+    clearFullscreenControlsTimer,
+    isFullscreen,
+    playing,
+    qualityOpen,
+    revealFullscreenControls,
+    speedOpen,
+  ]);
+
+  useEffect(() => clearFullscreenControlsTimer, [clearFullscreenControlsTimer]);
+
   function toggleFullscreen() {
     const node = stageRef.current;
     if (!node) return;
@@ -1667,6 +1934,12 @@ export function RelayApp() {
       ? "you control playback"
       : "host controls playback";
   const roomMeta = `${participants.length} watching · ${effectiveQuality} · ${formatRate(ownSample.kbps)}`;
+  const activeSubtitle = subtitlesOn
+    ? subtitleCues
+        .filter((cue) => position >= cue.start && position <= cue.end)
+        .map((cue) => cue.text)
+        .join("\n")
+    : "";
 
   const completedPrep =
     prep < 0
@@ -1969,7 +2242,19 @@ export function RelayApp() {
         {screen === "room" && session && (
           <div className="room">
             <div className="room-main">
-              <div className="stage" ref={stageRef}>
+              <div
+                className={`stage${isFullscreen && !controlsVisible ? " is-controls-hidden" : ""}`}
+                ref={stageRef}
+                onPointerMove={() => {
+                  if (isFullscreen) revealFullscreenControls();
+                }}
+                onPointerDown={() => {
+                  if (isFullscreen) revealFullscreenControls();
+                }}
+                onFocusCapture={() => {
+                  if (isFullscreen) revealFullscreenControls();
+                }}
+              >
                 {isHost ? (
                   <video
                     ref={localVideoRef}
@@ -2061,8 +2346,14 @@ export function RelayApp() {
                   </div>
                 )}
 
+                {activeSubtitle && (
+                  <div className="subtitle-layer" aria-live="off">
+                    <span>{activeSubtitle}</span>
+                  </div>
+                )}
+
                 {qualityOpen && (
-                  <div className="quality-menu" role="menu">
+                  <div className="player-menu quality-menu" role="menu">
                     <span className="lbl">Quality</span>
                     {QUALITY_LADDER.map((rung) => (
                       <button
@@ -2084,7 +2375,30 @@ export function RelayApp() {
                   </div>
                 )}
 
-                <div className="controls">
+                {speedOpen && (
+                  <div className="player-menu speed-menu" role="menu">
+                    <span className="lbl">Playback speed</span>
+                    {PLAYBACK_RATES.map((rate) => (
+                      <button
+                        key={rate}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={playbackRate === rate}
+                        className="quality-opt"
+                        onClick={() => choosePlaybackRate(rate)}
+                      >
+                        <span>{rate}×</span>
+                        {rate === 1 && <span className="rate">normal</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div
+                  className="controls"
+                  inert={isFullscreen && !controlsVisible ? true : undefined}
+                  aria-hidden={isFullscreen && !controlsVisible}
+                >
                   {weakLink && (
                     <div className="weak-banner">
                       <span className="weak-dot" />
@@ -2127,8 +2441,9 @@ export function RelayApp() {
                     >
                       {playing ? <PauseIcon /> : <PlayIcon />}
                     </button>
-                    <span className="timecode">
-                      {formatTime(position)} / {formatTime(duration)}
+                    <span className="timecode" aria-label={`${formatTime(position)} of ${formatTime(duration)}`}>
+                      <span>{formatTime(position)}</span>
+                      <span className="time-total"> / {formatTime(duration)}</span>
                     </span>
 
                     <div className="volume">
@@ -2173,18 +2488,59 @@ export function RelayApp() {
                     </span>
                     <button
                       type="button"
-                      className="btn btn-overlay"
-                      onClick={() => setQualityOpen((open) => !open)}
+                      className="btn btn-overlay control-select"
+                      onClick={() => {
+                        setSpeedOpen(false);
+                        setQualityOpen((open) => !open);
+                      }}
                       aria-expanded={qualityOpen}
+                      aria-label={`Quality: ${qualityButtonLabel}`}
                     >
                       {qualityButtonLabel}
                       <ChevronDownIcon />
                     </button>
                     <button
                       type="button"
+                      className="btn btn-overlay control-select speed-trigger"
+                      onClick={() => {
+                        if (!iHoldControl) {
+                          notify("Playback speed follows the host in this session");
+                          return;
+                        }
+                        setQualityOpen(false);
+                        setSpeedOpen((open) => !open);
+                      }}
+                      aria-expanded={speedOpen}
+                      aria-label={`Playback speed: ${playbackRate} times`}
+                      title={iHoldControl ? "Playback speed" : "Playback speed follows the host"}
+                    >
+                      {playbackRate}×
+                      <ChevronDownIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={`icon-btn cc-btn${subtitlesOn ? " is-active" : ""}`}
+                      onClick={() => void toggleSubtitles()}
+                      aria-label={
+                        subtitleCues.length
+                          ? subtitlesOn
+                            ? "Turn subtitles off"
+                            : "Turn subtitles on"
+                          : isHost
+                            ? "Add subtitles"
+                            : "Subtitles unavailable"
+                      }
+                      aria-pressed={subtitlesOn}
+                      title={subtitleName || (isHost ? "Add subtitles" : "No subtitles")}
+                    >
+                      CC
+                    </button>
+                    <button
+                      type="button"
                       className="icon-btn icon-btn-dim"
                       onClick={toggleFullscreen}
-                      aria-label="Toggle fullscreen"
+                      aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                      title={isFullscreen ? "Exit fullscreen (f)" : "Fullscreen (f)"}
                     >
                       <ExpandIcon />
                     </button>
@@ -2216,6 +2572,13 @@ export function RelayApp() {
                       onClick={() => fileInputRef.current?.click()}
                     >
                       Change video
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => subtitleInputRef.current?.click()}
+                    >
+                      {subtitleName ? "Replace subtitles" : "Add subtitles"}
                     </button>
                     <button type="button" className="btn btn-danger" onClick={endSession}>
                       End session
@@ -2465,6 +2828,14 @@ export function RelayApp() {
         accept={VIDEO_FILE_ACCEPT}
         onChange={onFileInput}
         aria-label="Choose a video file"
+      />
+      <input
+        ref={subtitleInputRef}
+        className="sr-only"
+        type="file"
+        accept=".srt,.vtt,text/vtt,application/x-subrip"
+        onChange={onSubtitleInput}
+        aria-label="Choose an SRT or WebVTT subtitle file"
       />
 
       {privacyOpen && (

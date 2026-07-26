@@ -774,6 +774,17 @@ button {
   overflow: hidden;
 }
 
+.stage:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  aspect-ratio: auto;
+}
+
+.stage.is-controls-hidden {
+  cursor: none;
+}
+
 .stage video {
   position: absolute;
   inset: 0;
@@ -781,6 +792,37 @@ button {
   height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+.subtitle-layer {
+  position: absolute;
+  left: 50%;
+  bottom: 78px;
+  z-index: 2;
+  width: min(82%, 920px);
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  pointer-events: none;
+  transition: bottom 180ms ease;
+}
+
+.subtitle-layer span {
+  white-space: pre-line;
+  padding: 4px 9px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.78);
+  font-size: clamp(15px, 2vw, 25px);
+  font-weight: 600;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px #000;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.stage.is-controls-hidden .subtitle-layer {
+  bottom: 5%;
 }
 
 .stage-empty {
@@ -878,11 +920,9 @@ button {
   }
 }
 
-.quality-menu {
+.player-menu {
   position: absolute;
-  right: var(--space-4);
   bottom: 76px;
-  width: 230px;
   background: var(--color-surface);
   border: 1px solid var(--color-divider);
   box-shadow: var(--shadow-lg);
@@ -891,7 +931,17 @@ button {
   z-index: 4;
 }
 
-.quality-menu > .lbl {
+.quality-menu {
+  right: var(--space-4);
+  width: 230px;
+}
+
+.speed-menu {
+  right: 118px;
+  width: 170px;
+}
+
+.player-menu > .lbl {
   padding: var(--space-3) var(--space-3) var(--space-2);
   border-bottom: 2px solid var(--color-divider);
 }
@@ -947,6 +997,22 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.stage.is-controls-hidden .controls {
+  opacity: 0;
+  transform: translateY(14px);
+  pointer-events: none;
+}
+
+.stage.is-controls-hidden .player-menu {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .weak-banner {
@@ -990,6 +1056,12 @@ button {
   width: 100%;
   height: 6px;
   background: rgba(244, 244, 245, 0.16);
+  transition: height 120ms ease;
+}
+
+.scrub:hover .scrub-track,
+.scrub:focus-visible .scrub-track {
+  height: 8px;
 }
 
 .scrub-buffer,
@@ -1020,7 +1092,8 @@ button {
 .control-row {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 10px;
+  min-width: 0;
 }
 
 .icon-btn {
@@ -1028,8 +1101,13 @@ button {
   background: transparent;
   cursor: pointer;
   color: #f4f4f5;
-  padding: 2px;
-  display: flex;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
 }
 
 .icon-btn:disabled {
@@ -1039,6 +1117,21 @@ button {
 
 .icon-btn-dim {
   color: rgba(244, 244, 245, 0.8);
+}
+
+.cc-btn {
+  width: 34px;
+  border: 1px solid rgba(244, 244, 245, 0.4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.cc-btn.is-active {
+  color: #fff;
+  border-color: var(--color-accent-400);
+  background: var(--color-accent);
 }
 
 /* Volume — the same 6px rail and 3px head the scrubber uses. */
@@ -1121,6 +1214,11 @@ button {
   border: 1px solid rgba(244, 244, 245, 0.4);
   padding: 6px 10px;
   font-size: 12px;
+}
+
+.control-select {
+  min-height: 32px;
+  flex: none;
 }
 
 .btn-overlay:hover:not(:disabled) {
@@ -1347,6 +1445,24 @@ button {
   max-width: min(80%, 420px);
 }
 
+/* — desktop room: keep the player and session rail within the viewport — */
+@media (min-width: 901px) {
+  .room {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .stage {
+    flex: 1;
+    min-height: 300px;
+    aspect-ratio: auto;
+  }
+
+  .room-under {
+    flex: none;
+  }
+}
+
 /* — narrow viewports: the rail stacks under the stage — */
 @media (max-width: 900px) {
   .screen {
@@ -1365,15 +1481,19 @@ button {
   .room {
     flex-direction: column;
   }
+  .room-main {
+    flex: none;
+  }
   .rail {
     width: 100%;
+    min-height: 340px;
     border-left: 0;
     border-top: 2px solid var(--color-divider);
   }
   .code-value.is-numeric {
     font-size: 34px;
   }
-  .quality-menu {
+  .player-menu {
     bottom: 68px;
   }
   /* The control row runs out of room first; the mute button carries on alone. */
@@ -1385,9 +1505,144 @@ button {
   }
 }
 
+@media (max-width: 640px) {
+  .nav {
+    gap: var(--space-2);
+    padding: 10px 12px;
+  }
+
+  .nav .tag-accent {
+    display: none;
+  }
+
+  .nav-me {
+    max-width: 10ch;
+  }
+
+  .screen {
+    padding: var(--space-4);
+  }
+
+  .stage-badges {
+    top: 8px;
+    left: 10px;
+  }
+
+  .stage-sync {
+    top: 8px;
+    right: 10px;
+  }
+
+  .stage-badges .tag-overlay {
+    display: none;
+  }
+
+  .stage-overlay {
+    padding: var(--space-4);
+  }
+
+  .stage-overlay h3 {
+    font-size: 17px;
+  }
+
+  .controls {
+    padding: 0 10px 8px;
+    gap: 3px;
+  }
+
+  .scrub {
+    height: 24px;
+  }
+
+  .scrub-track {
+    height: 5px;
+  }
+
+  .control-row {
+    gap: 6px;
+  }
+
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .cc-btn {
+    width: 34px;
+  }
+
+  .timecode {
+    font-size: 11px;
+  }
+
+  .time-total {
+    display: none;
+  }
+
+  .control-select {
+    min-height: 36px;
+    padding: 6px 8px;
+  }
+
+  .player-menu {
+    right: 8px;
+    bottom: 60px;
+    max-height: calc(100% - 72px);
+    overflow: auto;
+  }
+
+  .quality-menu {
+    width: min(230px, calc(100% - 16px));
+  }
+
+  .speed-menu {
+    width: min(180px, calc(100% - 16px));
+  }
+
+  .subtitle-layer {
+    bottom: 64px;
+    width: 92%;
+  }
+
+  .subtitle-layer span {
+    font-size: clamp(13px, 4vw, 18px);
+  }
+
+  .room-under {
+    padding: var(--space-3);
+  }
+
+  .room-under .btn {
+    min-height: 40px;
+  }
+
+  .weak-banner {
+    width: 100%;
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 420px) {
+  .timecode {
+    display: none;
+  }
+
+  .nav-code {
+    display: none;
+  }
+
+  .code-value.is-numeric {
+    font-size: 29px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .spinner,
-  .weak-dot {
+  .weak-dot,
+  .controls,
+  .subtitle-layer,
+  .scrub-track {
     animation: none;
+    transition: none;
   }
 }

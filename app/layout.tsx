@@ -30,14 +30,14 @@ export const metadata: Metadata = {
     description:
       "Peer-streamed, end-to-end encrypted, nothing stored.",
     type: "website",
-    images: ["/og.png"],
+    images: ["/og-player.png"],
   },
   twitter: {
     card: "summary_large_image",
     title: "Relay — Encrypted video sharing, direct from your device",
     description:
       "Peer-to-peer video rooms with an encrypted control channel. No accounts. No uploads. No history.",
-    images: ["/og.png"],
+    images: ["/og-player.png"],
   },
 };
 
