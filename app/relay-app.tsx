@@ -1705,7 +1705,7 @@ export function RelayApp() {
         event.preventDefault();
         setMobileFullscreen(false);
         setControlsVisible(true);
-        screen.orientation?.unlock?.();
+        window.screen.orientation?.unlock?.();
       } else if (key === "f") {
         event.preventDefault();
         void toggleFullscreen();
@@ -1986,7 +1986,7 @@ export function RelayApp() {
       setNativeFullscreen(active);
       setControlsVisible(true);
       clearFullscreenControlsTimer();
-      if (!active) screen.orientation?.unlock?.();
+      if (!active) window.screen.orientation?.unlock?.();
     };
     document.addEventListener("fullscreenchange", onFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
@@ -2022,7 +2022,7 @@ export function RelayApp() {
     if (mobileFullscreen) {
       setMobileFullscreen(false);
       setControlsVisible(true);
-      screen.orientation?.unlock?.();
+      window.screen.orientation?.unlock?.();
       return;
     }
 
@@ -2034,8 +2034,8 @@ export function RelayApp() {
     try {
       await node.requestFullscreen();
       if (navigator.maxTouchPoints > 0 || window.innerWidth <= 900) {
-        const orientation = screen.orientation as ScreenOrientation & {
-          lock?: (orientation: OrientationLockType) => Promise<void>;
+        const orientation = window.screen.orientation as ScreenOrientation & {
+          lock?: (orientation: "landscape") => Promise<void>;
         };
         await orientation.lock?.("landscape").catch(() => undefined);
       }
