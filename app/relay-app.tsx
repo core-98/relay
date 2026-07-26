@@ -302,6 +302,7 @@ export function RelayApp() {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
+  const [videoAspect, setVideoAspect] = useState(16 / 9);
   const [myPermissions, setMyPermissions] = useState<Permissions>(NO_PERMISSIONS);
   const [controlHolder, setControlHolder] = useState<string | null>(null);
   const [holderName, setHolderName] = useState("");
@@ -381,6 +382,11 @@ export function RelayApp() {
   }, [toast]);
 
   const notify = useCallback((message: string) => setToast(message), []);
+
+  const rememberVideoAspect = useCallback((video: HTMLVideoElement) => {
+    if (!video.videoWidth || !video.videoHeight) return;
+    setVideoAspect(Math.min(2.4, Math.max(0.5, video.videoWidth / video.videoHeight)));
+  }, []);
 
   const attachRemoteStream = useCallback(() => {
     const video = remoteVideoRef.current;
@@ -730,6 +736,7 @@ export function RelayApp() {
       setPlaying(false);
       setPosition(0);
       setDuration(0);
+      setVideoAspect(16 / 9);
       setControlHolder(null);
       setHolderName("");
       setPendingControl(null);
@@ -2295,6 +2302,7 @@ export function RelayApp() {
                   isFullscreen && !controlsVisible ? " is-controls-hidden" : ""
                 }`}
                 ref={stageRef}
+                style={{ "--video-aspect": videoAspect } as CSSProperties}
                 onPointerMove={() => {
                   if (isFullscreen) revealFullscreenControls();
                 }}
@@ -2315,6 +2323,8 @@ export function RelayApp() {
                       setBuffered(ranges.length ? ranges.end(ranges.length - 1) : 0);
                     }}
                     onDurationChange={(event) => setDuration(event.currentTarget.duration || 0)}
+                    onLoadedMetadata={(event) => rememberVideoAspect(event.currentTarget)}
+                    onResize={(event) => rememberVideoAspect(event.currentTarget)}
                     onPlay={() => setPlaying(true)}
                     onPause={() => setPlaying(false)}
                   />
@@ -2323,10 +2333,14 @@ export function RelayApp() {
                     ref={remoteVideoRef}
                     autoPlay
                     playsInline
-                    onLoadedMetadata={(event) =>
-                      setPictureReady(event.currentTarget.videoWidth > 0)
-                    }
-                    onResize={(event) => setPictureReady(event.currentTarget.videoWidth > 0)}
+                    onLoadedMetadata={(event) => {
+                      setPictureReady(event.currentTarget.videoWidth > 0);
+                      rememberVideoAspect(event.currentTarget);
+                    }}
+                    onResize={(event) => {
+                      setPictureReady(event.currentTarget.videoWidth > 0);
+                      rememberVideoAspect(event.currentTarget);
+                    }}
                   />
                 )}
 

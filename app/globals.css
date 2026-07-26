@@ -769,7 +769,7 @@ button {
   position: relative;
   width: 100%;
   background: #000;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--video-aspect, 16 / 9);
   flex: none;
   overflow: hidden;
 }
@@ -1676,6 +1676,87 @@ html.relay-fullscreen-lock body {
 
   .code-value.is-numeric {
     font-size: 29px;
+  }
+}
+
+@media (max-width: 640px) and (orientation: portrait) {
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: color-mix(in srgb, var(--color-bg) 96%, transparent);
+  }
+
+  .body {
+    overflow: visible;
+  }
+
+  .room {
+    min-height: auto;
+  }
+
+  .stage:not(.is-mobile-fullscreen) {
+    position: sticky;
+    top: 45px;
+    z-index: 10;
+    min-height: 180px;
+    max-height: 68dvh;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  }
+
+  .room-under {
+    background: var(--color-bg);
+    gap: var(--space-4);
+  }
+
+  .room-title-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .room-title-row h4 {
+    width: 100%;
+    font-size: 17px;
+  }
+
+  .room-under > .btn-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .room-under > .btn-row .btn {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    padding-inline: 8px;
+  }
+
+  .room-under > .btn-row .btn-danger,
+  .viewer-hint {
+    grid-column: 1 / -1;
+  }
+
+  .viewer-hint {
+    padding-top: 4px;
+    line-height: 1.45;
+  }
+
+  .rail {
+    min-height: 0;
+    height: auto;
+  }
+
+  .rail-tabs {
+    position: sticky;
+    top: 45px;
+    z-index: 9;
+    background: var(--color-bg);
+  }
+
+  .rail-body {
+    overflow: visible;
   }
 }
 
